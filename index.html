@@ -406,6 +406,7 @@
               ấ · U+1EA5
             </span>
             <span id="editorGlyphName" class="text-xs text-gray-400 hidden sm:inline">acircumflexacute</span>
+            <span id="editorDirtyBadge" class="hidden text-[10px] px-1.5 py-0.5 rounded bg-amber-500/20 border border-amber-500/40 text-amber-300 font-semibold">● Chưa lưu</span>
           </div>
 
           <div class="flex items-center gap-1 shrink-0">
@@ -418,6 +419,11 @@
           </div>
 
           <div class="flex items-center gap-1.5 shrink-0">
+            <span id="undoRedoStatus" class="hidden xl:inline text-[10px] mono text-gray-400 px-1.5">Undo 0/50 · Redo 0/50</span>
+            <button id="btnSaveGlyph" class="fl-btn text-[11px] py-1 px-2.5 opacity-60" title="Lưu chỉnh sửa ký tự hiện tại (Ctrl+S)">
+              <i data-lucide="save" class="w-3.5 h-3.5"></i>
+              <span>Lưu Glyph</span>
+            </button>
             <button id="btnToggleInspector" class="fl-btn lg:hidden" title="Ẩn/hiện bảng thuộc tính">
               <i data-lucide="panel-right" class="w-3.5 h-3.5"></i>
             </button>
@@ -871,6 +877,29 @@
 
       <div class="px-5 py-3 bg-[#17191f] border-t border-[#2e3240] flex justify-end shrink-0">
         <button id="btnCancelDriveModal" class="fl-btn">Đóng</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Unsaved Glyph Confirmation Modal -->
+  <div id="modalUnsavedGlyph" class="modal-backdrop hidden">
+    <div class="bg-[#1c1e24] border border-[#353a4a] rounded-xl w-full max-w-md shadow-2xl overflow-hidden">
+      <div class="px-5 py-3.5 border-b border-[#2e3240] flex items-center justify-between">
+        <h2 class="text-sm font-bold text-white flex items-center gap-2">
+          <i data-lucide="alert-triangle" class="w-4 h-4 text-amber-400"></i> Ký tự chưa được lưu
+        </h2>
+        <button id="btnUnsavedCloseX" class="text-gray-400 hover:text-white"><i data-lucide="x" class="w-4 h-4"></i></button>
+      </div>
+      <div class="p-5 text-xs text-gray-300 leading-relaxed space-y-2">
+        <p>Bạn có các chỉnh sửa chưa lưu trên ký tự <strong id="unsavedGlyphLabel" class="text-amber-300 mono">ấ</strong>.</p>
+        <p class="text-gray-400">Bạn muốn lưu thay đổi trước khi chuyển sang ký tự/mục khác không?</p>
+      </div>
+      <div class="px-5 py-3 bg-[#17191f] border-t border-[#2e3240] flex flex-wrap justify-end gap-2">
+        <button id="btnUnsavedCancel" class="fl-btn">Ở Lại</button>
+        <button id="btnUnsavedDiscard" class="fl-btn text-red-400 hover:text-red-300">Bỏ Qua Thay Đổi</button>
+        <button id="btnUnsavedSave" class="fl-btn fl-btn-emerald">
+          <i data-lucide="save" class="w-3.5 h-3.5"></i> Lưu & Chuyển
+        </button>
       </div>
     </div>
   </div>
@@ -1572,6 +1601,12 @@
       dragState: null,
       penContour: null,
       clipboardContours: null,
+      editorDraft: null,
+      editorDirty: false,
+      pendingNavAction: null,
+      hoveredNode: null,
+      hoveredAnchor: null,
+      hoveredRSB: false,
       undoStack: [],
       redoStack: [],
       paperLight: false,
@@ -2890,8 +2925,81 @@
       grid.appendChild(frag);
     }
 
-    function openGlyphInEditor(uni) {
-      // If missing Vietnamese glyph, auto-compose it on open
+    const UNDO_LIMIT = 50;
+
+    function cloneGlyphObj(g) {
+      if (!g) return null;
+      return {
+        unicode: g.unicode,
+        char: g.char,
+        name: g.name,
+        advanceWidth: g.advanceWidth,
+        contours: cloneContours(g.contours || []),
+        anchors: JSON.parse(JSON.stringify(g.anchors || {})),
+        source: g.source || 'manual',
+        recipe: g.recipe || null,
+        diacriticKey: g.diacriticKey || null,
+        markOffset: { ...(g.markOffset || { dx: 0, dy: 0, scale: 100 }) }
+      };
+    }
+
+    function updateEditorDirtyUI() {
+      const badge = document.getElementById('editorDirtyBadge');
+      const saveBtn = document.getElementById('btnSaveGlyph');
+      const urStatus = document.getElementById('undoRedoStatus');
+      const btnUndo = document.getElementById('btnUndo');
+      const btnRedo = document.getElementById('btnRedo');
+
+      if (badge) badge.classList.toggle('hidden', !state.editorDirty);
+      if (saveBtn) {
+        if (state.editorDirty) {
+          saveBtn.classList.add('fl-btn-emerald');
+          saveBtn.classList.remove('opacity-60');
+        } else {
+          saveBtn.classList.remove('fl-btn-emerald');
+          saveBtn.classList.add('opacity-60');
+        }
+      }
+      if (urStatus) urStatus.textContent = `Undo ${state.undoStack.length}/${UNDO_LIMIT} · Redo ${state.redoStack.length}/${UNDO_LIMIT}`;
+      if (btnUndo) {
+        btnUndo.title = `Hoàn tác (Ctrl+Z) — ${state.undoStack.length}/${UNDO_LIMIT}`;
+        btnUndo.style.opacity = state.undoStack.length ? '1' : '0.45';
+      }
+      if (btnRedo) {
+        btnRedo.title = `Làm lại (Ctrl+Y) — ${state.redoStack.length}/${UNDO_LIMIT}`;
+        btnRedo.style.opacity = state.redoStack.length ? '1' : '0.45';
+      }
+    }
+
+    function markEditorDirty() {
+      state.editorDirty = true;
+      updateEditorDirtyUI();
+    }
+
+    function saveEditorDraft() {
+      if (!state.editorDraft) return;
+      state.glyphs[state.selectedUnicode] = cloneGlyphObj(state.editorDraft);
+      state.editorDirty = false;
+      updateEditorDirtyUI();
+      compileAndLoadLivePreview();
+      showToast(`Đã lưu chỉnh sửa ký tự "${state.editorDraft.char === ' ' ? 'SPACE' : state.editorDraft.char}"!`, 'success');
+    }
+
+    function guardUnsavedGlyph(actionFn) {
+      if (state.activeTab === 'editor' && state.editorDirty && state.editorDraft) {
+        state.pendingNavAction = actionFn;
+        const lbl = document.getElementById('unsavedGlyphLabel');
+        if (lbl) {
+          const hex = 'U+' + state.editorDraft.unicode.toString(16).toUpperCase().padStart(4, '0');
+          lbl.textContent = `${state.editorDraft.char === ' ' ? 'SPACE' : state.editorDraft.char} (${hex})`;
+        }
+        document.getElementById('modalUnsavedGlyph').classList.remove('hidden');
+        return;
+      }
+      actionFn();
+    }
+
+    function loadEditorDraft(uni) {
       if (!state.glyphs[uni]) {
         const recipe = VN_RECIPE_MAP.get(uni);
         if (recipe) {
@@ -2912,15 +3020,32 @@
         };
       }
       state.selectedUnicode = uni;
+      state.editorDraft = cloneGlyphObj(state.glyphs[uni]);
+      state.editorDirty = false;
       state.selectedNode = null;
       state.selectedContour = null;
       state.selectedAnchor = null;
+      state.hoveredNode = null;
+      state.hoveredAnchor = null;
+      state.hoveredRSB = false;
       state.penContour = null;
       state.undoStack = [];
       state.redoStack = [];
-      switchTab('editor');
-      fitEditorCamera();
-      renderEditorAll();
+      updateEditorDirtyUI();
+    }
+
+    function openGlyphInEditor(uni, bypassGuard = false) {
+      const doOpen = () => {
+        loadEditorDraft(uni);
+        switchTab('editor', true);
+        fitEditorCamera();
+        renderEditorAll();
+      };
+      if (bypassGuard || (state.activeTab === 'editor' && uni === state.selectedUnicode)) {
+        if (uni !== state.selectedUnicode || !state.editorDraft) doOpen();
+        return;
+      }
+      guardUnsavedGlyph(doOpen);
     }
 
     // =========================================================================
@@ -2930,53 +3055,62 @@
     const gCtx = glyphCanvas.getContext('2d');
 
     function getActiveGlyph() {
-      return state.glyphs[state.selectedUnicode] || null;
+      if (!state.editorDraft && state.glyphs[state.selectedUnicode]) {
+        state.editorDraft = cloneGlyphObj(state.glyphs[state.selectedUnicode]);
+      }
+      return state.editorDraft || null;
+    }
+
+    function snapshotDraft(g) {
+      return {
+        contours: cloneContours(g.contours),
+        advanceWidth: g.advanceWidth,
+        anchors: JSON.parse(JSON.stringify(g.anchors || {})),
+        markOffset: { ...(g.markOffset || { dx: 0, dy: 0, scale: 100 }) },
+        source: g.source
+      };
     }
 
     function pushUndo() {
       const g = getActiveGlyph();
       if (!g) return;
-      state.undoStack.push({
-        contours: cloneContours(g.contours),
-        advanceWidth: g.advanceWidth,
-        anchors: JSON.parse(JSON.stringify(g.anchors || {})),
-        markOffset: { ...(g.markOffset || { dx: 0, dy: 0, scale: 100 }) }
-      });
-      if (state.undoStack.length > 40) state.undoStack.shift();
+      state.undoStack.push(snapshotDraft(g));
+      if (state.undoStack.length > UNDO_LIMIT) state.undoStack.shift();
       state.redoStack = [];
+      markEditorDirty();
     }
 
     function undoEdit() {
       const g = getActiveGlyph();
       if (!g || state.undoStack.length === 0) return;
-      state.redoStack.push({
-        contours: cloneContours(g.contours),
-        advanceWidth: g.advanceWidth,
-        anchors: JSON.parse(JSON.stringify(g.anchors || {})),
-        markOffset: { ...(g.markOffset || { dx: 0, dy: 0, scale: 100 }) }
-      });
+      state.redoStack.push(snapshotDraft(g));
+      if (state.redoStack.length > UNDO_LIMIT) state.redoStack.shift();
       const prev = state.undoStack.pop();
       g.contours = prev.contours;
       g.advanceWidth = prev.advanceWidth;
       g.anchors = prev.anchors;
       g.markOffset = prev.markOffset;
+      g.source = prev.source;
+      state.selectedNode = null;
+      state.hoveredNode = null;
+      markEditorDirty();
       renderEditorAll();
     }
 
     function redoEdit() {
       const g = getActiveGlyph();
       if (!g || state.redoStack.length === 0) return;
-      state.undoStack.push({
-        contours: cloneContours(g.contours),
-        advanceWidth: g.advanceWidth,
-        anchors: JSON.parse(JSON.stringify(g.anchors || {})),
-        markOffset: { ...(g.markOffset || { dx: 0, dy: 0, scale: 100 }) }
-      });
+      state.undoStack.push(snapshotDraft(g));
+      if (state.undoStack.length > UNDO_LIMIT) state.undoStack.shift();
       const next = state.redoStack.pop();
       g.contours = next.contours;
       g.advanceWidth = next.advanceWidth;
       g.anchors = next.anchors;
       g.markOffset = next.markOffset;
+      g.source = next.source;
+      state.selectedNode = null;
+      state.hoveredNode = null;
+      markEditorDirty();
       renderEditorAll();
     }
 
@@ -3089,8 +3223,8 @@
         const sxAdv = fontToScreen(g.advanceWidth, 0).x;
         gCtx.strokeStyle = 'rgba(255,255,255,0.35)';
         gCtx.beginPath(); gCtx.moveTo(sx0, 0); gCtx.lineTo(sx0, h); gCtx.stroke();
-        gCtx.strokeStyle = 'rgba(59,130,246,0.75)';
-        gCtx.lineWidth = 1.5;
+        gCtx.strokeStyle = state.hoveredRSB ? '#38bdf8' : 'rgba(59,130,246,0.75)';
+        gCtx.lineWidth = state.hoveredRSB ? 3 : 1.5;
         gCtx.beginPath(); gCtx.moveTo(sxAdv, 0); gCtx.lineTo(sxAdv, h); gCtx.stroke();
         gCtx.fillStyle = '#60a5fa';
         gCtx.fillText(`RSB / Adv (${g.advanceWidth})`, sxAdv + 6, 20);
@@ -3156,50 +3290,95 @@
             }
           }
 
-          // Draw node markers
+          // Draw node markers (with 2x Hover Highlight & Magnetic Halo)
+          let activeTip = null;
           for (let i = 0; i < n; i++) {
             const p = c[i];
             const sp = fontToScreen(p.x, p.y);
             const isSel = state.selectedNode && state.selectedNode.cIdx === cIdx && state.selectedNode.pIdx === i;
+            const isHov = state.hoveredNode && state.hoveredNode.cIdx === cIdx && state.hoveredNode.pIdx === i;
+            const isDraggingThis = state.dragState && state.dragState.type === 'node' && state.dragState.cIdx === cIdx && state.dragState.pIdx === i;
+            const isHot = isHov || isDraggingThis;
+
+            if (isHot) {
+              // Magnetic target halo around hovered/dragged node
+              gCtx.save();
+              gCtx.beginPath();
+              gCtx.arc(sp.x, sp.y, 14, 0, Math.PI * 2);
+              gCtx.fillStyle = p.on ? 'rgba(56, 189, 248, 0.22)' : 'rgba(244, 114, 182, 0.25)';
+              gCtx.fill();
+              gCtx.strokeStyle = '#facc15';
+              gCtx.lineWidth = 1.6;
+              gCtx.stroke();
+              gCtx.restore();
+              activeTip = { x: sp.x, y: sp.y, fx: p.x, fy: p.y, on: p.on };
+            }
 
             if (p.on) {
-              gCtx.fillStyle = isSel ? '#facc15' : (i === 0 ? '#10b981' : '#3b82f6');
-              gCtx.strokeStyle = '#0f172a';
-              gCtx.lineWidth = 1.2;
-              const sz = isSel ? 9 : 7;
+              gCtx.fillStyle = isHot ? '#facc15' : (isSel ? '#fde047' : (i === 0 ? '#10b981' : '#3b82f6'));
+              gCtx.strokeStyle = isHot ? '#ffffff' : '#0f172a';
+              gCtx.lineWidth = isHot ? 2 : 1.2;
+              const sz = isHot ? 14 : (isSel ? 10 : 7);
               gCtx.fillRect(sp.x - sz / 2, sp.y - sz / 2, sz, sz);
               gCtx.strokeRect(sp.x - sz / 2, sp.y - sz / 2, sz, sz);
             } else {
-              gCtx.fillStyle = isSel ? '#facc15' : '#ec4899';
-              gCtx.strokeStyle = '#0f172a';
+              gCtx.fillStyle = isHot ? '#facc15' : (isSel ? '#fde047' : '#ec4899');
+              gCtx.strokeStyle = isHot ? '#ffffff' : '#0f172a';
+              gCtx.lineWidth = isHot ? 2 : 1.2;
+              const rad = isHot ? 7.6 : (isSel ? 5.2 : 3.8);
               gCtx.beginPath();
-              gCtx.arc(sp.x, sp.y, isSel ? 5 : 3.8, 0, Math.PI * 2);
+              gCtx.arc(sp.x, sp.y, rad, 0, Math.PI * 2);
               gCtx.fill();
               gCtx.stroke();
             }
           }
+
+          if (activeTip) {
+            const label = `(${activeTip.fx}, ${activeTip.fy}) · ${activeTip.on ? 'Node' : 'Handle'}`;
+            gCtx.font = '10.5px JetBrains Mono, monospace';
+            const tw = gCtx.measureText(label).width;
+            const bx = activeTip.x + 16;
+            const by = activeTip.y - 22;
+            gCtx.fillStyle = 'rgba(15, 23, 42, 0.92)';
+            gCtx.strokeStyle = '#facc15';
+            gCtx.lineWidth = 1;
+            gCtx.beginPath();
+            gCtx.roundRect(bx, by, tw + 12, 20, 4);
+            gCtx.fill();
+            gCtx.stroke();
+            gCtx.fillStyle = '#fef08a';
+            gCtx.fillText(label, bx + 6, by + 13.5);
+          }
         });
       }
 
-      // 6. Anchors (Amber Diamonds)
+      // 6. Anchors (Amber Diamonds with hover highlight)
       if (state.view.anchors && g.anchors) {
         gCtx.font = '11px JetBrains Mono, monospace';
         for (const [key, pt] of Object.entries(g.anchors)) {
           const sp = fontToScreen(pt.x, pt.y);
           const isSel = state.selectedAnchor === key;
-          gCtx.fillStyle = isSel ? '#fef08a' : '#f59e0b';
-          gCtx.strokeStyle = '#141519';
-          gCtx.lineWidth = 1.4;
+          const isHov = state.hoveredAnchor === key;
+          const r = isHov ? 11 : 7;
+          if (isHov) {
+            gCtx.beginPath();
+            gCtx.arc(sp.x, sp.y, 15, 0, Math.PI * 2);
+            gCtx.fillStyle = 'rgba(245, 158, 11, 0.25)';
+            gCtx.fill();
+          }
+          gCtx.fillStyle = (isSel || isHov) ? '#fef08a' : '#f59e0b';
+          gCtx.strokeStyle = isHov ? '#ffffff' : '#141519';
+          gCtx.lineWidth = isHov ? 1.8 : 1.4;
           gCtx.beginPath();
-          gCtx.moveTo(sp.x, sp.y - 7);
-          gCtx.lineTo(sp.x + 7, sp.y);
-          gCtx.lineTo(sp.x, sp.y + 7);
-          gCtx.lineTo(sp.x - 7, sp.y);
+          gCtx.moveTo(sp.x, sp.y - r);
+          gCtx.lineTo(sp.x + r, sp.y);
+          gCtx.lineTo(sp.x, sp.y + r);
+          gCtx.lineTo(sp.x - r, sp.y);
           gCtx.closePath();
           gCtx.fill();
           gCtx.stroke();
           gCtx.fillStyle = '#fbbf24';
-          gCtx.fillText(key, sp.x + 10, sp.y + 4);
+          gCtx.fillText(key, sp.x + r + 5, sp.y + 4);
         }
       }
 
@@ -3278,6 +3457,38 @@
       return { x: e.clientX - rect.left, y: e.clientY - rect.top };
     }
 
+    function findNearestNode(g, pos, maxDist = 18) {
+      let best = null;
+      let bestDist = maxDist;
+      for (let cIdx = 0; cIdx < g.contours.length; cIdx++) {
+        const c = g.contours[cIdx];
+        for (let pIdx = 0; pIdx < c.length; pIdx++) {
+          const sp = fontToScreen(c[pIdx].x, c[pIdx].y);
+          const dist = Math.hypot(pos.x - sp.x, pos.y - sp.y);
+          if (dist < bestDist) {
+            bestDist = dist;
+            best = { cIdx, pIdx, dist };
+          }
+        }
+      }
+      return best;
+    }
+
+    function findNearestAnchor(g, pos, maxDist = 16) {
+      if (!state.view.anchors || !g.anchors) return null;
+      let best = null;
+      let bestDist = maxDist;
+      for (const [k, pt] of Object.entries(g.anchors)) {
+        const sp = fontToScreen(pt.x, pt.y);
+        const dist = Math.hypot(pos.x - sp.x, pos.y - sp.y);
+        if (dist < bestDist) {
+          bestDist = dist;
+          best = k;
+        }
+      }
+      return best;
+    }
+
     glyphCanvas.addEventListener('mousedown', (e) => {
       const g = getActiveGlyph();
       if (!g) return;
@@ -3290,10 +3501,25 @@
         return;
       }
 
+      // Node Tool: prioritize nearest node with generous 18px magnetic hit radius
+      if (state.tool === 'node' && state.view.nodes) {
+        const hitNode = findNearestNode(g, pos, 18);
+        if (hitNode) {
+          pushUndo();
+          state.selectedNode = { cIdx: hitNode.cIdx, pIdx: hitNode.pIdx };
+          state.selectedContour = hitNode.cIdx;
+          const origPt = g.contours[hitNode.cIdx][hitNode.pIdx];
+          state.dragState = { type: 'node', cIdx: hitNode.cIdx, pIdx: hitNode.pIdx, origX: origPt.x, origY: origPt.y };
+          glyphCanvas.style.cursor = 'grabbing';
+          renderEditorCanvas();
+          return;
+        }
+      }
+
       // Check RSB / Advance Width drag line
       if (state.view.metrics) {
         const sxAdv = fontToScreen(g.advanceWidth, 0).x;
-        if (Math.abs(pos.x - sxAdv) < 8) {
+        if (Math.abs(pos.x - sxAdv) < 10) {
           pushUndo();
           state.dragState = { type: 'rsb', startX: pos.x, origAdv: g.advanceWidth };
           return;
@@ -3301,16 +3527,14 @@
       }
 
       // Anchor Tool (or clicking directly on an anchor when visible)
-      if (state.view.anchors && g.anchors && (state.tool === 'anchor' || state.tool === 'node')) {
-        for (const [k, pt] of Object.entries(g.anchors)) {
-          const sp = fontToScreen(pt.x, pt.y);
-          if (Math.hypot(pos.x - sp.x, pos.y - sp.y) < 11) {
-            pushUndo();
-            state.selectedAnchor = k;
-            state.dragState = { type: 'anchor', key: k };
-            renderEditorCanvas();
-            return;
-          }
+      if (state.tool === 'anchor' || state.tool === 'node') {
+        const hitAnchor = findNearestAnchor(g, pos, 16);
+        if (hitAnchor) {
+          pushUndo();
+          state.selectedAnchor = hitAnchor;
+          state.dragState = { type: 'anchor', key: hitAnchor };
+          renderEditorCanvas();
+          return;
         }
       }
 
@@ -3321,7 +3545,7 @@
         } else {
           // Close if clicking near first point
           const firstSp = fontToScreen(state.penContour[0].x, state.penContour[0].y);
-          if (state.penContour.length >= 3 && Math.hypot(pos.x - firstSp.x, pos.y - firstSp.y) < 12) {
+          if (state.penContour.length >= 3 && Math.hypot(pos.x - firstSp.x, pos.y - firstSp.y) < 15) {
             pushUndo();
             g.contours.push(state.penContour);
             g.source = 'manual';
@@ -3335,22 +3559,8 @@
         return;
       }
 
-      // Node Tool: hit-test nodes
+      // Deselect if clicked empty space with Node Tool
       if (state.tool === 'node') {
-        for (let cIdx = 0; cIdx < g.contours.length; cIdx++) {
-          const c = g.contours[cIdx];
-          for (let pIdx = 0; pIdx < c.length; pIdx++) {
-            const sp = fontToScreen(c[pIdx].x, c[pIdx].y);
-            if (Math.hypot(pos.x - sp.x, pos.y - sp.y) < 10) {
-              pushUndo();
-              state.selectedNode = { cIdx, pIdx };
-              state.selectedContour = cIdx;
-              state.dragState = { type: 'node', cIdx, pIdx };
-              renderEditorCanvas();
-              return;
-            }
-          }
-        }
         state.selectedNode = null;
         state.selectedContour = null;
         renderEditorCanvas();
@@ -3383,10 +3593,43 @@
       document.getElementById('hudX').textContent = fPos.x;
       document.getElementById('hudY').textContent = fPos.y;
 
-      const d = state.dragState;
-      if (!d) return;
       const g = getActiveGlyph();
       if (!g) return;
+      const d = state.dragState;
+
+      // Hover detection when not dragging
+      if (!d) {
+        let nextNode = null;
+        let nextAnchor = null;
+        let nextRSB = false;
+
+        if (state.tool === 'node' && state.view.nodes) {
+          const hit = findNearestNode(g, pos, 18);
+          if (hit) nextNode = { cIdx: hit.cIdx, pIdx: hit.pIdx };
+        }
+        if (!nextNode && (state.tool === 'anchor' || state.tool === 'node')) {
+          nextAnchor = findNearestAnchor(g, pos, 16);
+        }
+        if (!nextNode && !nextAnchor && state.view.metrics) {
+          const sxAdv = fontToScreen(g.advanceWidth, 0).x;
+          if (Math.abs(pos.x - sxAdv) < 10) nextRSB = true;
+        }
+
+        const nodeChanged = JSON.stringify(nextNode) !== JSON.stringify(state.hoveredNode);
+        const anchorChanged = nextAnchor !== state.hoveredAnchor;
+        const rsbChanged = nextRSB !== state.hoveredRSB;
+
+        if (nodeChanged || anchorChanged || rsbChanged) {
+          state.hoveredNode = nextNode;
+          state.hoveredAnchor = nextAnchor;
+          state.hoveredRSB = nextRSB;
+          if (nextNode || nextAnchor) glyphCanvas.style.cursor = 'pointer';
+          else if (nextRSB) glyphCanvas.style.cursor = 'ew-resize';
+          else glyphCanvas.style.cursor = state.tool === 'pan' ? 'grab' : (state.tool === 'move' ? 'move' : 'crosshair');
+          renderEditorCanvas();
+        }
+        return;
+      }
 
       if (d.type === 'pan') {
         state.cam.panX = d.origPanX + (pos.x - d.startX);
@@ -3401,8 +3644,14 @@
         renderEditorAll();
       } else if (d.type === 'node') {
         const pt = g.contours[d.cIdx][d.pIdx];
-        pt.x = fPos.x;
-        pt.y = fPos.y;
+        let nx = fPos.x;
+        let ny = fPos.y;
+        if (e.shiftKey) {
+          if (Math.abs(nx - d.origX) >= Math.abs(ny - d.origY)) ny = d.origY;
+          else nx = d.origX;
+        }
+        pt.x = nx;
+        pt.y = ny;
         g.source = 'manual';
         renderEditorCanvas();
       } else if (d.type === 'contour') {
@@ -3414,12 +3663,23 @@
       }
     });
 
+    glyphCanvas.addEventListener('mouseleave', () => {
+      if (state.hoveredNode || state.hoveredAnchor || state.hoveredRSB) {
+        state.hoveredNode = null;
+        state.hoveredAnchor = null;
+        state.hoveredRSB = false;
+        renderEditorCanvas();
+      }
+    });
+
     window.addEventListener('mouseup', () => {
       if (state.dragState) {
         const wasEdit = state.dragState.type !== 'pan';
         state.dragState = null;
+        glyphCanvas.style.cursor = state.tool === 'pan' ? 'grab' : (state.tool === 'move' ? 'move' : 'crosshair');
         if (wasEdit) {
           renderEditorInspector();
+          renderEditorCanvas();
         }
       }
     });
@@ -3429,19 +3689,14 @@
       if (!g || state.tool !== 'node') return;
       const pos = getCanvasMousePos(e);
       const fPos = screenToFont(pos.x, pos.y);
-      // Double-click on a node toggles on-curve / off-curve
-      for (let cIdx = 0; cIdx < g.contours.length; cIdx++) {
-        const c = g.contours[cIdx];
-        for (let pIdx = 0; pIdx < c.length; pIdx++) {
-          const sp = fontToScreen(c[pIdx].x, c[pIdx].y);
-          if (Math.hypot(pos.x - sp.x, pos.y - sp.y) < 10) {
-            pushUndo();
-            c[pIdx].on = !c[pIdx].on;
-            g.source = 'manual';
-            renderEditorCanvas();
-            return;
-          }
-        }
+      // Double-click on nearest node toggles on-curve / off-curve
+      const hitNode = findNearestNode(g, pos, 18);
+      if (hitNode) {
+        pushUndo();
+        g.contours[hitNode.cIdx][hitNode.pIdx].on = !g.contours[hitNode.cIdx][hitNode.pIdx].on;
+        g.source = 'manual';
+        renderEditorCanvas();
+        return;
       }
       // Otherwise insert node on nearest segment of selected contour
       if (state.selectedContour !== null && g.contours[state.selectedContour]) {
@@ -3476,6 +3731,8 @@
       if (['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement.tagName)) return;
       if (state.activeTab !== 'editor') return;
 
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') { e.preventDefault(); saveEditorDraft(); return; }
+      if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === 'z') { e.preventDefault(); redoEdit(); return; }
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') { e.preventDefault(); undoEdit(); return; }
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'y') { e.preventDefault(); redoEdit(); return; }
 
@@ -3492,6 +3749,7 @@
         e.preventDefault();
         const g = getActiveGlyph();
         if (!g) return;
+        pushUndo();
         const step = e.shiftKey ? 10 : 2;
         const pt = g.contours[state.selectedNode.cIdx][state.selectedNode.pIdx];
         if (k === 'arrowup') pt.y += step;
@@ -3596,7 +3854,11 @@
     // =========================================================================
     // 15. TAB SWITCHING, MODALS, TOASTS & EVENT BINDINGS
     // =========================================================================
-    function switchTab(tab) {
+    function switchTab(tab, bypassGuard = false) {
+      if (!bypassGuard && state.activeTab === 'editor' && tab !== 'editor' && state.editorDirty) {
+        guardUnsavedGlyph(() => switchTab(tab, true));
+        return;
+      }
       state.activeTab = tab;
       document.querySelectorAll('.tab-btn').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
       document.getElementById('viewFontMap').classList.toggle('hidden', tab !== 'fontmap');
@@ -3606,6 +3868,9 @@
       if (tab === 'fontmap') {
         renderFontMap();
       } else if (tab === 'editor') {
+        if (!state.editorDraft || state.editorDraft.unicode !== state.selectedUnicode) {
+          loadEditorDraft(state.selectedUnicode);
+        }
         resizeEditorCanvas();
         renderEditorAll();
       } else if (tab === 'preview') {
@@ -3932,7 +4197,7 @@
       renderEditorAll();
     });
 
-    // Diacritic Fine-Tuning Bar (per glyph)
+    // Diacritic Fine-Tuning Bar (per glyph — edits draft only until Saved)
     function updateActiveGlyphDiacriticOffset() {
       const g = getActiveGlyph();
       if (!g) return;
@@ -3946,21 +4211,47 @@
       document.getElementById('valMarkScale').textContent = `${scale}%`;
       const recomposed = composeVietnameseGlyph(recipe, { dx, dy, scale });
       if (recomposed) {
-        state.glyphs[g.unicode] = recomposed;
+        state.editorDraft = recomposed;
+        markEditorDirty();
         renderEditorCanvas();
       }
     }
     ['slMarkX', 'slMarkY', 'slMarkScale'].forEach(id => {
-      document.getElementById(id).addEventListener('input', updateActiveGlyphDiacriticOffset);
+      const el = document.getElementById(id);
+      el.addEventListener('pointerdown', () => pushUndo());
+      el.addEventListener('input', updateActiveGlyphDiacriticOffset);
     });
     document.getElementById('btnRecomposeGlyph').addEventListener('click', () => {
       const g = getActiveGlyph();
       const recipe = g && VN_RECIPE_MAP.get(g.unicode);
       if (!recipe) return;
       pushUndo();
-      state.glyphs[g.unicode] = composeVietnameseGlyph(recipe, { dx: 0, dy: 0, scale: 100 });
+      state.editorDraft = composeVietnameseGlyph(recipe, { dx: 0, dy: 0, scale: 100 });
       renderEditorAll();
-      showToast(`Đã ghép lại ký tự "${g.char}" theo Anchor chuẩn.`, 'info');
+      showToast(`Đã ghép lại bản nháp "${g.char}" theo Anchor chuẩn. Nhấn Lưu Glyph để áp dụng.`, 'info');
+    });
+
+    // Save Glyph button & Unsaved Changes Modal actions
+    document.getElementById('btnSaveGlyph').addEventListener('click', saveEditorDraft);
+
+    function closeUnsavedModal(runPending = false) {
+      document.getElementById('modalUnsavedGlyph').classList.add('hidden');
+      const fn = state.pendingNavAction;
+      state.pendingNavAction = null;
+      if (runPending && typeof fn === 'function') fn();
+    }
+
+    document.getElementById('btnUnsavedCloseX').addEventListener('click', () => closeUnsavedModal(false));
+    document.getElementById('btnUnsavedCancel').addEventListener('click', () => closeUnsavedModal(false));
+    document.getElementById('btnUnsavedDiscard').addEventListener('click', () => {
+      state.editorDirty = false;
+      state.editorDraft = cloneGlyphObj(state.glyphs[state.selectedUnicode]);
+      updateEditorDirtyUI();
+      closeUnsavedModal(true);
+    });
+    document.getElementById('btnUnsavedSave').addEventListener('click', () => {
+      saveEditorDraft();
+      closeUnsavedModal(true);
     });
 
     // Vietnamese Diacritic Studio (Global Style)
