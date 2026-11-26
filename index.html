@@ -817,14 +817,27 @@
 
         <!-- Direct Google Drive API Upload (OAuth2 Bearer Token) -->
         <div class="bg-[#15171d] border border-[#2e3240] rounded-xl p-3.5 space-y-2.5">
-          <div class="font-semibold text-white flex items-center gap-1.5">
-            <i data-lucide="key-round" class="w-4 h-4 text-sky-400"></i> Đồng bộ trực tiếp qua Google Drive API v3 (OAuth2 Access Token)
+          <div class="flex flex-wrap items-center justify-between gap-2">
+            <div class="font-semibold text-white flex items-center gap-1.5">
+              <i data-lucide="key-round" class="w-4 h-4 text-sky-400"></i> Đồng bộ trực tiếp qua Google Drive API v3 (OAuth2 Access Token)
+            </div>
+            <a href="https://developers.google.com/oauthplayground/" target="_blank" rel="noopener" class="text-[11px] text-sky-400 hover:underline flex items-center gap-1">
+              Lấy Access Token (ya29.) <i data-lucide="external-link" class="w-3 h-3"></i>
+            </a>
           </div>
           <p class="text-[11px] text-gray-400 leading-relaxed">
-            Dán OAuth2 Access Token (scope <span class="mono text-gray-300">drive.file</span>) để tải trực tiếp lên Google Drive và duyệt danh sách phiên đã lưu ngay trong ứng dụng.
+            Dán <strong class="text-gray-200">OAuth 2.0 Access Token</strong> (luôn bắt đầu bằng <span class="mono text-sky-300">ya29.</span>, không phải API Key <span class="mono">AIza...</span> hay Client ID). Token có hiệu lực 60 phút với quyền <span class="mono text-gray-300">drive.file</span>.
           </p>
-          <div class="flex gap-2">
-            <input id="inpDriveToken" type="password" placeholder="ya29.a0AfH6SM..." class="fl-input mono flex-1" />
+          <div class="flex flex-wrap gap-2">
+            <div class="relative flex-1 min-w-[200px]">
+              <input id="inpDriveToken" type="password" placeholder="Dán Access Token bắt đầu bằng ya29...." class="fl-input mono pr-8" />
+              <button id="btnToggleTokenVis" type="button" title="Hiện / ẩn token" class="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-white">
+                <i data-lucide="eye" class="w-3.5 h-3.5"></i>
+              </button>
+            </div>
+            <button id="btnVerifyDriveToken" class="fl-btn shrink-0" title="Kiểm tra tính hợp lệ và tài khoản của Access Token">
+              <i data-lucide="shield-check" class="w-3.5 h-3.5 text-emerald-400"></i> Kiểm tra
+            </button>
             <button id="btnUploadDriveAPI" class="fl-btn fl-btn-primary shrink-0">
               <i data-lucide="cloud-upload" class="w-3.5 h-3.5"></i> Lưu Lên Drive
             </button>
@@ -832,7 +845,15 @@
               <i data-lucide="refresh-cw" class="w-3.5 h-3.5"></i> Tải DS Drive
             </button>
           </div>
-          <div id="driveApiStatus" class="text-[11px] text-gray-400"></div>
+          <details class="text-[11px] text-gray-400 bg-[#12141a] border border-[#262a36] rounded-lg px-3 py-2">
+            <summary class="cursor-pointer text-gray-300 font-medium">Hướng dẫn lấy OAuth 2.0 Access Token (ya29.) trong 30 giây</summary>
+            <ol class="list-decimal pl-4 mt-1.5 space-y-1 text-gray-400">
+              <li>Mở <a href="https://developers.google.com/oauthplayground/" target="_blank" rel="noopener" class="text-sky-400 underline">Google OAuth 2.0 Playground</a>.</li>
+              <li>Ở Step 1, tìm <strong>Drive API v3</strong> → chọn <span class="mono text-gray-200">https://www.googleapis.com/auth/drive.file</span> → bấm <strong>Authorize APIs</strong> và đăng nhập Google.</li>
+              <li>Ở Step 2, bấm <strong>Exchange authorization code for tokens</strong>, sao chép dòng <strong>Access token</strong> (bắt đầu bằng <span class="mono text-sky-300">ya29.</span>) và dán vào ô trên.</li>
+            </ol>
+          </details>
+          <div id="driveApiStatus" class="text-[11px] text-gray-400 leading-relaxed"></div>
           <div id="driveFilesList" class="space-y-1.5 max-h-36 overflow-y-auto"></div>
         </div>
 
@@ -1990,14 +2011,82 @@
       }
     }
 
-    async function uploadSessionToGoogleDrive() {
-      const token = document.getElementById('inpDriveToken').value.trim();
-      const name = document.getElementById('inpDriveSessionName').value.trim() || getDefaultSessionFilename();
+    function sanitizeAndValidateDriveToken(raw) {
+      const cleaned = (raw || '')
+        .trim()
+        .replace(/^["']|["']$/g, '')
+        .replace(/^Bearer\s+/i, '')
+        .replace(/\s+/g, '');
+
+      if (!cleaned) {
+        return { ok: false, error: 'Vui lòng dán OAuth 2.0 Access Token (bắt đầu bằng ya29.) hoặc dùng nút "Tải Gói Phiên & Mở Google Drive" ở trên.' };
+      }
+      if (cleaned.startsWith('AIza')) {
+        return { ok: false, error: 'Bạn đang dán Google API Key (AIza...). Google Drive yêu cầu OAuth 2.0 Access Token bắt đầu bằng "ya29." (xem hướng dẫn 30 giây ngay bên dưới).' };
+      }
+      if (cleaned.includes('.apps.googleusercontent.com')) {
+        return { ok: false, error: 'Bạn đang dán OAuth Client ID, không phải Access Token. Hãy lấy chuỗi Access token bắt đầu bằng "ya29." từ Google OAuth 2.0 Playground.' };
+      }
+      if (cleaned.startsWith('GOCSPX-')) {
+        return { ok: false, error: 'Bạn đang dán Client Secret (GOCSPX-...), không phải Access Token (ya29.).' };
+      }
+      if (cleaned.startsWith('1//')) {
+        return { ok: false, error: 'Bạn đang dán Refresh Token (1//...). Hãy sao chép dòng "Access token" (bắt đầu bằng ya29.) ở Step 2 của OAuth Playground.' };
+      }
+      if (cleaned.length < 30) {
+        return { ok: false, error: 'Chuỗi token quá ngắn và không đúng định dạng OAuth 2.0 Access Token (ya29....).' };
+      }
+      return { ok: true, token: cleaned };
+    }
+
+    function formatDriveAuthError(status, apiMsg) {
+      if (status === 401 || /invalid authentication credentials/i.test(apiMsg || '')) {
+        return 'Access Token không hợp lệ hoặc đã hết hạn (mỗi token chỉ có hiệu lực 60 phút). Hãy lấy lại Access Token mới bắt đầu bằng "ya29." tại OAuth 2.0 Playground, hoặc dùng nút "Tải Gói Phiên & Mở Google Drive" ở trên.';
+      }
+      if (status === 403) {
+        return `Token thiếu quyền truy cập Google Drive (cần scope drive.file). Chi tiết: ${apiMsg}`;
+      }
+      return apiMsg || `HTTP ${status}`;
+    }
+
+    async function verifyDriveToken() {
       const statusEl = document.getElementById('driveApiStatus');
-      if (!token) {
-        statusEl.innerHTML = '<span class="text-amber-400">Vui lòng nhập OAuth2 Access Token hoặc dùng nút "Tải Gói Phiên & Mở Google Drive" ở trên.</span>';
+      const check = sanitizeAndValidateDriveToken(document.getElementById('inpDriveToken').value);
+      if (!check.ok) {
+        statusEl.innerHTML = `<span class="text-amber-400">⚠ ${check.error}</span>`;
         return;
       }
+      const token = check.token;
+      document.getElementById('inpDriveToken').value = token;
+      try { localStorage.setItem(DRIVE_TOKEN_KEY, token); } catch (_) {}
+      statusEl.innerHTML = '<span class="text-blue-400">Đang xác thực Access Token với Google...</span>';
+
+      try {
+        const resp = await fetch('https://www.googleapis.com/drive/v3/about?fields=user(displayName,emailAddress)', {
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+        const data = await resp.json();
+        if (!resp.ok) {
+          throw new Error(formatDriveAuthError(resp.status, data.error && data.error.message));
+        }
+        const user = data.user || {};
+        statusEl.innerHTML = `<span class="text-emerald-400">✓ Token hợp lệ! Đã kết nối tài khoản: <strong>${user.displayName || 'Google User'}</strong> (${user.emailAddress || ''})</span>`;
+        showToast('Xác thực Google Drive thành công!', 'success');
+      } catch (err) {
+        statusEl.innerHTML = `<span class="text-red-400">✗ ${err.message}</span>`;
+      }
+    }
+
+    async function uploadSessionToGoogleDrive() {
+      const statusEl = document.getElementById('driveApiStatus');
+      const check = sanitizeAndValidateDriveToken(document.getElementById('inpDriveToken').value);
+      if (!check.ok) {
+        statusEl.innerHTML = `<span class="text-amber-400">⚠ ${check.error}</span>`;
+        return;
+      }
+      const token = check.token;
+      document.getElementById('inpDriveToken').value = token;
+      const name = document.getElementById('inpDriveSessionName').value.trim() || getDefaultSessionFilename();
       try { localStorage.setItem(DRIVE_TOKEN_KEY, token); } catch (_) {}
       statusEl.innerHTML = '<span class="text-blue-400">Đang tải phiên làm việc lên Google Drive...</span>';
 
@@ -2021,7 +2110,7 @@
         });
         const result = await resp.json();
         if (!resp.ok) {
-          throw new Error((result.error && result.error.message) || `HTTP ${resp.status}`);
+          throw new Error(formatDriveAuthError(resp.status, result.error && result.error.message));
         }
         const link = result.webViewLink || `https://drive.google.com/file/d/${result.id}/view`;
         statusEl.innerHTML = `<span class="text-emerald-400">✓ Đã lưu thành công lên Google Drive!</span> <a href="${link}" target="_blank" rel="noopener" class="underline text-sky-400 ml-1">Mở file trên Drive</a>`;
@@ -2033,13 +2122,15 @@
     }
 
     async function listSessionsFromGoogleDrive() {
-      const token = document.getElementById('inpDriveToken').value.trim();
       const statusEl = document.getElementById('driveApiStatus');
       const listEl = document.getElementById('driveFilesList');
-      if (!token) {
-        statusEl.innerHTML = '<span class="text-amber-400">Vui lòng nhập OAuth2 Access Token để duyệt file trên Google Drive.</span>';
+      const check = sanitizeAndValidateDriveToken(document.getElementById('inpDriveToken').value);
+      if (!check.ok) {
+        statusEl.innerHTML = `<span class="text-amber-400">⚠ ${check.error}</span>`;
         return;
       }
+      const token = check.token;
+      document.getElementById('inpDriveToken').value = token;
       try { localStorage.setItem(DRIVE_TOKEN_KEY, token); } catch (_) {}
       statusEl.innerHTML = '<span class="text-blue-400">Đang tải danh sách phiên từ Google Drive...</span>';
       listEl.innerHTML = '';
@@ -2050,7 +2141,7 @@
           headers: { 'Authorization': `Bearer ${token}` }
         });
         const data = await resp.json();
-        if (!resp.ok) throw new Error((data.error && data.error.message) || `HTTP ${resp.status}`);
+        if (!resp.ok) throw new Error(formatDriveAuthError(resp.status, data.error && data.error.message));
         const files = data.files || [];
         statusEl.innerHTML = `<span class="text-emerald-400">Tìm thấy ${files.length} phiên .vietfont.json trên Google Drive.</span>`;
         if (files.length === 0) return;
@@ -2072,7 +2163,7 @@
               const dl = await fetch(`https://www.googleapis.com/drive/v3/files/${f.id}?alt=media`, {
                 headers: { 'Authorization': `Bearer ${token}` }
               });
-              if (!dl.ok) throw new Error(`HTTP ${dl.status}`);
+              if (!dl.ok) throw new Error(formatDriveAuthError(dl.status, `HTTP ${dl.status}`));
               const json = await dl.json();
               applySessionData(json, f.name);
               document.getElementById('modalDriveSync').classList.add('hidden');
@@ -3616,6 +3707,11 @@
       showToast(`Đã tải "${fname}" và mở Google Drive. Bạn chỉ cần kéo thả file vào Drive để lưu!`, 'success');
     });
     document.getElementById('btnLoadSessionFile').addEventListener('click', () => fileInput.click());
+    document.getElementById('btnToggleTokenVis').addEventListener('click', () => {
+      const inp = document.getElementById('inpDriveToken');
+      inp.type = inp.type === 'password' ? 'text' : 'password';
+    });
+    document.getElementById('btnVerifyDriveToken').addEventListener('click', verifyDriveToken);
     document.getElementById('btnUploadDriveAPI').addEventListener('click', uploadSessionToGoogleDrive);
     document.getElementById('btnListDriveAPI').addEventListener('click', listSessionsFromGoogleDrive);
 
